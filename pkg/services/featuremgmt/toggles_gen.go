@@ -977,4 +977,8 @@ const (
 	// FlagGrafanaFrontendLegacyAPIHandling
 	// Controls whether the frontend blocks calls to legacy /api/ endpoints
 	FlagGrafanaFrontendLegacyAPIHandling = "grafana.frontendLegacyAPIHandling"
+
+	// FlagAuthzListFoldersViaSearch
+	// Build the access-control folder tree by listing folders via the unified-storage search index (lightweight UID+parent refs) instead of a full object list, avoiding paged object-list round-trips.
+	FlagAuthzListFoldersViaSearch = "authz.listFoldersViaSearch"
 )
