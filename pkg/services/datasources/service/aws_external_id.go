@@ -70,9 +70,9 @@ func ensureGrafanaExternalID(uid, stackExternalID string, jsonData *simplejson.J
 	jsonData.Set(grafanaExternalIDJSONKey, buildGrafanaExternalID(stackExternalID, uid))
 }
 
-// preserveGrafanaExternalID keeps a valid existing per-datasource external ID immutable across updates,
-// scrubs invalid stored or client-supplied values, and optionally mints when switching into
-// grafana_assume_role (when allowGenerate is true).
+// preserveGrafanaExternalID keeps a valid existing per-datasource external ID immutable across updates
+// (unless allowGenerate allows clearing back to stack mode), scrubs invalid stored or client-supplied
+// values, and optionally mints when switching into grafana_assume_role (when allowGenerate is true).
 //
 // Legacy grafana_assume_role datasources without an ID keep using the stack-level fallback until
 // explicitly migrated — we do not generate on ordinary updates.
@@ -93,11 +93,19 @@ func preserveGrafanaExternalID(uid, stackExternalID string, existing, updated *s
 
 	if existingID != "" {
 		if isValidGrafanaExternalID(existingID, stackExternalID, uid) {
-			// Immutable once set (even when generation is feature-flagged off).
+			updatedID := updated.Get(grafanaExternalIDJSONKey).MustString()
+			if updatedID == "" {
+				if allowGenerate {
+					// UI toggled to stack mode (or stolen id scrubbed to empty with FT on).
+					return
+				}
+				updated.Set(grafanaExternalIDJSONKey, existingID)
+				return
+			}
+			// Non-empty after scrub must be the bound value; force existing (immutable value while per-DS).
 			updated.Set(grafanaExternalIDJSONKey, existingID)
 			return
 		}
-		// Scrub planted values already in the store so STS falls back to the stack ID.
 		updated.Del(grafanaExternalIDJSONKey)
 	}
 

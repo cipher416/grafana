@@ -103,16 +103,55 @@ func TestEnsureGrafanaExternalID(t *testing.T) {
 }
 
 func TestPreserveGrafanaExternalID(t *testing.T) {
-	t.Run("preserves existing ID on update", func(t *testing.T) {
+	t.Run("allows clear when allowGenerate and updated field empty", func(t *testing.T) {
 		existing := simplejson.NewFromAny(map[string]any{
 			"authType":               grafanaAssumeRoleAuthType,
 			grafanaExternalIDJSONKey: "stackABC-dsUid1",
 		})
 		updated := simplejson.NewFromAny(map[string]any{
 			"authType":               grafanaAssumeRoleAuthType,
-			grafanaExternalIDJSONKey: "stackABC-stolen",
+			grafanaExternalIDJSONKey: "",
 		})
 		preserveGrafanaExternalID("dsUid1", "stackABC", existing, updated, true)
+		assert.Empty(t, updated.Get(grafanaExternalIDJSONKey).MustString())
+	})
+
+	t.Run("preserves when allowGenerate false and updated clears field", func(t *testing.T) {
+		existing := simplejson.NewFromAny(map[string]any{
+			"authType":               grafanaAssumeRoleAuthType,
+			grafanaExternalIDJSONKey: "stackABC-dsUid1",
+		})
+		updated := simplejson.NewFromAny(map[string]any{
+			"authType":               grafanaAssumeRoleAuthType,
+			grafanaExternalIDJSONKey: "",
+		})
+		preserveGrafanaExternalID("dsUid1", "stackABC", existing, updated, false)
+		assert.Equal(t, "stackABC-dsUid1", updated.Get(grafanaExternalIDJSONKey).MustString())
+	})
+
+	t.Run("still rejects overwrite with different non-empty id when allowing generate", func(t *testing.T) {
+		existing := simplejson.NewFromAny(map[string]any{
+			"authType":               grafanaAssumeRoleAuthType,
+			grafanaExternalIDJSONKey: "stackABC-dsUid1",
+		})
+		updated := simplejson.NewFromAny(map[string]any{
+			"authType":               grafanaAssumeRoleAuthType,
+			grafanaExternalIDJSONKey: "stackABC-otherUid",
+		})
+		preserveGrafanaExternalID("dsUid1", "stackABC", existing, updated, true)
+		assert.Empty(t, updated.Get(grafanaExternalIDJSONKey).MustString())
+	})
+
+	t.Run("FT off restores existing after scrubbing stolen update", func(t *testing.T) {
+		existing := simplejson.NewFromAny(map[string]any{
+			"authType":               grafanaAssumeRoleAuthType,
+			grafanaExternalIDJSONKey: "stackABC-dsUid1",
+		})
+		updated := simplejson.NewFromAny(map[string]any{
+			"authType":               grafanaAssumeRoleAuthType,
+			grafanaExternalIDJSONKey: "stackABC-otherUid",
+		})
+		preserveGrafanaExternalID("dsUid1", "stackABC", existing, updated, false)
 		assert.Equal(t, "stackABC-dsUid1", updated.Get(grafanaExternalIDJSONKey).MustString())
 	})
 
@@ -206,7 +245,7 @@ func TestPreserveGrafanaExternalID(t *testing.T) {
 		assert.Empty(t, updated.Get(grafanaExternalIDJSONKey).MustString())
 	})
 
-	t.Run("leaves field when switching away from grafana_assume_role", func(t *testing.T) {
+	t.Run("clears field when switching away from grafana_assume_role with FT on", func(t *testing.T) {
 		existing := simplejson.NewFromAny(map[string]any{
 			"authType":               grafanaAssumeRoleAuthType,
 			grafanaExternalIDJSONKey: "stackABC-dsUid1",
@@ -215,6 +254,18 @@ func TestPreserveGrafanaExternalID(t *testing.T) {
 			"authType": "keys",
 		})
 		preserveGrafanaExternalID("dsUid1", "stackABC", existing, updated, true)
+		assert.Empty(t, updated.Get(grafanaExternalIDJSONKey).MustString())
+	})
+
+	t.Run("preserves field when switching away from grafana_assume_role with FT off", func(t *testing.T) {
+		existing := simplejson.NewFromAny(map[string]any{
+			"authType":               grafanaAssumeRoleAuthType,
+			grafanaExternalIDJSONKey: "stackABC-dsUid1",
+		})
+		updated := simplejson.NewFromAny(map[string]any{
+			"authType": "keys",
+		})
+		preserveGrafanaExternalID("dsUid1", "stackABC", existing, updated, false)
 		assert.Equal(t, "stackABC-dsUid1", updated.Get(grafanaExternalIDJSONKey).MustString())
 	})
 
