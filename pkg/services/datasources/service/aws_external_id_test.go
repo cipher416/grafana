@@ -94,6 +94,16 @@ func TestEnsureGrafanaExternalID(t *testing.T) {
 		assert.Empty(t, jd.Get(grafanaExternalIDJSONKey).MustString())
 	})
 
+	t.Run("keeps valid dormant ID when usePerDatasourceExternalId is false", func(t *testing.T) {
+		jd := simplejson.NewFromAny(map[string]any{
+			"authType":                        grafanaAssumeRoleAuthType,
+			usePerDatasourceExternalIDJSONKey: false,
+			grafanaExternalIDJSONKey:          "stackABC-dsUid1",
+		})
+		ensureGrafanaExternalID("dsUid1", "stackABC", jd, true)
+		assert.Equal(t, "stackABC-dsUid1", jd.Get(grafanaExternalIDJSONKey).MustString())
+	})
+
 	t.Run("mints when usePerDatasourceExternalId is true", func(t *testing.T) {
 		jd := simplejson.NewFromAny(map[string]any{
 			"authType":                        grafanaAssumeRoleAuthType,
@@ -113,7 +123,7 @@ func TestEnsureGrafanaExternalID(t *testing.T) {
 }
 
 func TestPreserveGrafanaExternalID(t *testing.T) {
-	t.Run("allows clear when usePerDatasourceExternalId is false", func(t *testing.T) {
+	t.Run("keeps stored ID when usePerDatasourceExternalId is false", func(t *testing.T) {
 		existing := simplejson.NewFromAny(map[string]any{
 			"authType":                        grafanaAssumeRoleAuthType,
 			usePerDatasourceExternalIDJSONKey: true,
@@ -125,7 +135,7 @@ func TestPreserveGrafanaExternalID(t *testing.T) {
 			grafanaExternalIDJSONKey:          "",
 		})
 		preserveGrafanaExternalID("dsUid1", "stackABC", existing, updated, true)
-		assert.Empty(t, updated.Get(grafanaExternalIDJSONKey).MustString())
+		assert.Equal(t, "stackABC-dsUid1", updated.Get(grafanaExternalIDJSONKey).MustString())
 	})
 
 	t.Run("preserves when bool omitted even if grafanaExternalId omitted", func(t *testing.T) {

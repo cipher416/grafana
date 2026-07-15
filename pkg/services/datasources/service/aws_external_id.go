@@ -5,9 +5,9 @@ import (
 )
 
 const (
-	grafanaAssumeRoleAuthType          = "grafana_assume_role"
-	grafanaExternalIDJSONKey           = "grafanaExternalId"
-	usePerDatasourceExternalIDJSONKey  = "usePerDatasourceExternalId"
+	grafanaAssumeRoleAuthType         = "grafana_assume_role"
+	grafanaExternalIDJSONKey          = "grafanaExternalId"
+	usePerDatasourceExternalIDJSONKey = "usePerDatasourceExternalId"
 )
 
 // buildGrafanaExternalID returns "{stackExternalId}-{dsUID}".
@@ -39,8 +39,8 @@ func usePerDatasourceExternalID(jsonData *simplejson.Json) (set bool, enabled bo
 }
 
 // clearInvalidGrafanaExternalID removes a client- or store-supplied grafanaExternalId that is
-// not bound to this datasource. Dual-read always prefers a set grafanaExternalId for STS, so
-// invalid values must never be persisted regardless of the minting feature toggle.
+// not bound to this datasource. Dual-read prefers a set grafanaExternalId when mode allows it,
+// so invalid values must never be persisted regardless of the minting feature toggle.
 func clearInvalidGrafanaExternalID(uid, stackExternalID string, jsonData *simplejson.Json) {
 	if jsonData == nil {
 		return
@@ -54,9 +54,9 @@ func clearInvalidGrafanaExternalID(uid, stackExternalID string, jsonData *simple
 	}
 }
 
-// ensureGrafanaExternalID validates (and clears) any client-supplied grafanaExternalId on create.
+// ensureGrafanaExternalID validates (and clears) any invalid client-supplied grafanaExternalId on create.
 // When allowGenerate is true and auth is grafana_assume_role:
-//   - usePerDatasourceExternalId=false → stack mode (clear ID, no mint)
+//   - usePerDatasourceExternalId=false → stack mode (do not mint; keep a valid dormant ID if present)
 //   - true or unset → mint when empty (new datasources default to per-DS)
 // Valid client-supplied IDs for this stack+uid are kept.
 func ensureGrafanaExternalID(uid, stackExternalID string, jsonData *simplejson.Json, allowGenerate bool) {
@@ -75,7 +75,6 @@ func ensureGrafanaExternalID(uid, stackExternalID string, jsonData *simplejson.J
 
 	modeSet, modeOn := usePerDatasourceExternalID(jsonData)
 	if modeSet && !modeOn {
-		jsonData.Del(grafanaExternalIDJSONKey)
 		return
 	}
 
@@ -89,13 +88,15 @@ func ensureGrafanaExternalID(uid, stackExternalID string, jsonData *simplejson.J
 	jsonData.Set(grafanaExternalIDJSONKey, buildGrafanaExternalID(stackExternalID, uid))
 }
 
-// preserveGrafanaExternalID keeps a valid existing per-datasource external ID across updates unless
-// the caller explicitly sets usePerDatasourceExternalId=false (stack mode) while allowGenerate is
-// true. Invalid IDs are always scrubbed. When allowGenerate is true it may mint when switching into
-// grafana_assume_role unless stack mode is requested.
+// preserveGrafanaExternalID keeps a valid existing per-datasource external ID across updates.
+// Stack vs per-DS mode is controlled by usePerDatasourceExternalId (consumed by aws-sdk);
+// switching to stack mode does not clear a stored ID. Invalid IDs are always scrubbed.
+// When allowGenerate is true it may mint when switching into grafana_assume_role or
+// explicitly opting into per-DS mode unless stack mode is requested.
 //
-// Omitting usePerDatasourceExternalId on update preserves an existing ID (Terraform-friendly).
-// Legacy GAR datasources without an ID keep the stack fallback until they opt in.
+// Omitting usePerDatasourceExternalId / grafanaExternalId on update preserves an existing ID
+// (Terraform-friendly). Legacy GAR datasources without an ID keep the stack fallback until
+// they opt in.
 func preserveGrafanaExternalID(uid, stackExternalID string, existing, updated *simplejson.Json, allowGenerate bool) {
 	if updated == nil {
 		return
@@ -114,20 +115,15 @@ func preserveGrafanaExternalID(uid, stackExternalID string, existing, updated *s
 	updatedAuthType := updated.Get("authType").MustString()
 	modeSet, modeOn := usePerDatasourceExternalID(updated)
 
-	// Leaving Grafana Assume Role: drop the GAR-specific ID when minting/clear is FT-enabled.
+	// Leaving Grafana Assume Role: drop the GAR-specific ID when minting is FT-enabled.
 	if allowGenerate && updatedAuthType != grafanaAssumeRoleAuthType {
-		updated.Del(grafanaExternalIDJSONKey)
-		return
-	}
-
-	if allowGenerate && modeSet && !modeOn {
 		updated.Del(grafanaExternalIDJSONKey)
 		return
 	}
 
 	if existingID != "" {
 		if isValidGrafanaExternalID(existingID, stackExternalID, uid) {
-			// Immutable value while remaining in per-DS mode; restore if omitted/cleared without explicit false.
+			// Keep the value across stack/per-DS toggles; mode is the bool.
 			updated.Set(grafanaExternalIDJSONKey, existingID)
 			return
 		}
@@ -138,6 +134,9 @@ func preserveGrafanaExternalID(uid, stackExternalID string, existing, updated *s
 		return
 	}
 	if updatedAuthType != grafanaAssumeRoleAuthType {
+		return
+	}
+	if modeSet && !modeOn {
 		return
 	}
 	if stackExternalID == "" || uid == "" {
