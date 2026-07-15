@@ -29,7 +29,6 @@ func TestEnsureGrafanaExternalID(t *testing.T) {
 	})
 
 	t.Run("clears stolen ID even when generation disabled", func(t *testing.T) {
-		// Hole 1: FT off must not be a full no-op — dual-read would otherwise use a planted ID.
 		stolen := "stackABC-otherUid"
 		jd := simplejson.NewFromAny(map[string]any{
 			"authType":               grafanaAssumeRoleAuthType,
@@ -42,8 +41,9 @@ func TestEnsureGrafanaExternalID(t *testing.T) {
 	t.Run("keeps valid client-supplied ID for pre-save UX", func(t *testing.T) {
 		clientID := "stackABC-dsUid1"
 		jd := simplejson.NewFromAny(map[string]any{
-			"authType":               grafanaAssumeRoleAuthType,
-			grafanaExternalIDJSONKey: clientID,
+			"authType":                          grafanaAssumeRoleAuthType,
+			usePerDatasourceExternalIDJSONKey:   true,
+			grafanaExternalIDJSONKey:            clientID,
 		})
 		ensureGrafanaExternalID("dsUid1", "stackABC", jd, true)
 		assert.Equal(t, clientID, jd.Get(grafanaExternalIDJSONKey).MustString())
@@ -84,16 +84,26 @@ func TestEnsureGrafanaExternalID(t *testing.T) {
 		assert.Empty(t, jd.Get(grafanaExternalIDJSONKey).MustString())
 	})
 
-	t.Run("does not mint when key present but empty (explicit stack mode)", func(t *testing.T) {
+	t.Run("does not mint when usePerDatasourceExternalId is false", func(t *testing.T) {
 		jd := simplejson.NewFromAny(map[string]any{
-			"authType":               grafanaAssumeRoleAuthType,
-			grafanaExternalIDJSONKey: "",
+			"authType":                        grafanaAssumeRoleAuthType,
+			usePerDatasourceExternalIDJSONKey: false,
+			grafanaExternalIDJSONKey:          "",
 		})
 		ensureGrafanaExternalID("dsUid1", "stackABC", jd, true)
 		assert.Empty(t, jd.Get(grafanaExternalIDJSONKey).MustString())
 	})
 
-	t.Run("mints when key absent and allowGenerate", func(t *testing.T) {
+	t.Run("mints when usePerDatasourceExternalId is true", func(t *testing.T) {
+		jd := simplejson.NewFromAny(map[string]any{
+			"authType":                        grafanaAssumeRoleAuthType,
+			usePerDatasourceExternalIDJSONKey: true,
+		})
+		ensureGrafanaExternalID("dsUid1", "stackABC", jd, true)
+		assert.Equal(t, "stackABC-dsUid1", jd.Get(grafanaExternalIDJSONKey).MustString())
+	})
+
+	t.Run("mints when bool absent (new DS default per-DS)", func(t *testing.T) {
 		jd := simplejson.NewFromAny(map[string]any{
 			"authType": grafanaAssumeRoleAuthType,
 		})
@@ -103,17 +113,32 @@ func TestEnsureGrafanaExternalID(t *testing.T) {
 }
 
 func TestPreserveGrafanaExternalID(t *testing.T) {
-	t.Run("allows clear when allowGenerate and updated field empty", func(t *testing.T) {
+	t.Run("allows clear when usePerDatasourceExternalId is false", func(t *testing.T) {
 		existing := simplejson.NewFromAny(map[string]any{
-			"authType":               grafanaAssumeRoleAuthType,
-			grafanaExternalIDJSONKey: "stackABC-dsUid1",
+			"authType":                        grafanaAssumeRoleAuthType,
+			usePerDatasourceExternalIDJSONKey: true,
+			grafanaExternalIDJSONKey:          "stackABC-dsUid1",
 		})
 		updated := simplejson.NewFromAny(map[string]any{
-			"authType":               grafanaAssumeRoleAuthType,
-			grafanaExternalIDJSONKey: "",
+			"authType":                        grafanaAssumeRoleAuthType,
+			usePerDatasourceExternalIDJSONKey: false,
+			grafanaExternalIDJSONKey:          "",
 		})
 		preserveGrafanaExternalID("dsUid1", "stackABC", existing, updated, true)
 		assert.Empty(t, updated.Get(grafanaExternalIDJSONKey).MustString())
+	})
+
+	t.Run("preserves when bool omitted even if grafanaExternalId omitted", func(t *testing.T) {
+		existing := simplejson.NewFromAny(map[string]any{
+			"authType":                        grafanaAssumeRoleAuthType,
+			usePerDatasourceExternalIDJSONKey: true,
+			grafanaExternalIDJSONKey:          "stackABC-dsUid1",
+		})
+		updated := simplejson.NewFromAny(map[string]any{
+			"authType": grafanaAssumeRoleAuthType,
+		})
+		preserveGrafanaExternalID("dsUid1", "stackABC", existing, updated, true)
+		assert.Equal(t, "stackABC-dsUid1", updated.Get(grafanaExternalIDJSONKey).MustString())
 	})
 
 	t.Run("preserves when allowGenerate false and updated clears field", func(t *testing.T) {
@@ -122,14 +147,15 @@ func TestPreserveGrafanaExternalID(t *testing.T) {
 			grafanaExternalIDJSONKey: "stackABC-dsUid1",
 		})
 		updated := simplejson.NewFromAny(map[string]any{
-			"authType":               grafanaAssumeRoleAuthType,
-			grafanaExternalIDJSONKey: "",
+			"authType":                        grafanaAssumeRoleAuthType,
+			usePerDatasourceExternalIDJSONKey: false,
+			grafanaExternalIDJSONKey:          "",
 		})
 		preserveGrafanaExternalID("dsUid1", "stackABC", existing, updated, false)
 		assert.Equal(t, "stackABC-dsUid1", updated.Get(grafanaExternalIDJSONKey).MustString())
 	})
 
-	t.Run("still rejects overwrite with different non-empty id when allowing generate", func(t *testing.T) {
+	t.Run("restores existing after scrubbing stolen update when bool omitted", func(t *testing.T) {
 		existing := simplejson.NewFromAny(map[string]any{
 			"authType":               grafanaAssumeRoleAuthType,
 			grafanaExternalIDJSONKey: "stackABC-dsUid1",
@@ -139,7 +165,7 @@ func TestPreserveGrafanaExternalID(t *testing.T) {
 			grafanaExternalIDJSONKey: "stackABC-otherUid",
 		})
 		preserveGrafanaExternalID("dsUid1", "stackABC", existing, updated, true)
-		assert.Empty(t, updated.Get(grafanaExternalIDJSONKey).MustString())
+		assert.Equal(t, "stackABC-dsUid1", updated.Get(grafanaExternalIDJSONKey).MustString())
 	})
 
 	t.Run("FT off restores existing after scrubbing stolen update", func(t *testing.T) {
@@ -169,7 +195,6 @@ func TestPreserveGrafanaExternalID(t *testing.T) {
 	})
 
 	t.Run("clears planted ID on legacy GAR update without minting", func(t *testing.T) {
-		// Hole 2: legacy GAR has no stored ID; client must not plant another DS's ID.
 		existing := simplejson.NewFromAny(map[string]any{"authType": grafanaAssumeRoleAuthType})
 		updated := simplejson.NewFromAny(map[string]any{
 			"authType":               grafanaAssumeRoleAuthType,
@@ -177,6 +202,16 @@ func TestPreserveGrafanaExternalID(t *testing.T) {
 		})
 		preserveGrafanaExternalID("dsUid1", "stackABC", existing, updated, true)
 		assert.Empty(t, updated.Get(grafanaExternalIDJSONKey).MustString())
+	})
+
+	t.Run("mints when legacy GAR explicitly opts in", func(t *testing.T) {
+		existing := simplejson.NewFromAny(map[string]any{"authType": grafanaAssumeRoleAuthType})
+		updated := simplejson.NewFromAny(map[string]any{
+			"authType":                        grafanaAssumeRoleAuthType,
+			usePerDatasourceExternalIDJSONKey: true,
+		})
+		preserveGrafanaExternalID("dsUid1", "stackABC", existing, updated, true)
+		assert.Equal(t, "stackABC-dsUid1", updated.Get(grafanaExternalIDJSONKey).MustString())
 	})
 
 	t.Run("scrubs invalid ID already stored and does not re-preserve it", func(t *testing.T) {
@@ -192,7 +227,6 @@ func TestPreserveGrafanaExternalID(t *testing.T) {
 	})
 
 	t.Run("clears smuggled ID under keys then mints on switch to GAR", func(t *testing.T) {
-		// Hole 3: plant under non-GAR, then switch — must not preserve the stolen value.
 		existing := simplejson.NewFromAny(map[string]any{
 			"authType":               "keys",
 			grafanaExternalIDJSONKey: "stackABC-otherUid",
@@ -230,6 +264,20 @@ func TestPreserveGrafanaExternalID(t *testing.T) {
 		preserveGrafanaExternalID("dsUid1", "stackABC", existing, updated, true)
 		assert.Equal(t, "stackABC-dsUid1", updated.Get(grafanaExternalIDJSONKey).MustString())
 		assert.Equal(t, "cross-account-id", updated.Get("externalId").MustString())
+	})
+
+	t.Run("does not mint on auth switch when usePerDatasourceExternalId is false", func(t *testing.T) {
+		existing := simplejson.NewFromAny(map[string]any{
+			"authType":   "keys",
+			"externalId": "cross-account-id",
+		})
+		updated := simplejson.NewFromAny(map[string]any{
+			"authType":                        grafanaAssumeRoleAuthType,
+			usePerDatasourceExternalIDJSONKey: false,
+			"externalId":                      "cross-account-id",
+		})
+		preserveGrafanaExternalID("dsUid1", "stackABC", existing, updated, true)
+		assert.Empty(t, updated.Get(grafanaExternalIDJSONKey).MustString())
 	})
 
 	t.Run("does not generate on auth switch when generation disabled", func(t *testing.T) {
