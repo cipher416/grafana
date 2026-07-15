@@ -20,6 +20,7 @@ func TestEnsureGrafanaExternalID(t *testing.T) {
 		jd := simplejson.NewFromAny(map[string]any{"authType": grafanaAssumeRoleAuthType})
 		ensureGrafanaExternalID("dsUid1", "stackABC", jd, true)
 		assert.Equal(t, "stackABC-dsUid1", jd.Get(grafanaExternalIDJSONKey).MustString())
+		assert.True(t, jd.Get(usePerDatasourceExternalIDJSONKey).MustBool())
 	})
 
 	t.Run("no mint when generation disabled", func(t *testing.T) {

@@ -86,6 +86,8 @@ func ensureGrafanaExternalID(uid, stackExternalID string, jsonData *simplejson.J
 	}
 
 	jsonData.Set(grafanaExternalIDJSONKey, buildGrafanaExternalID(stackExternalID, uid))
+	// Persist the mode explicitly so STS does not treat the ID as dormant legacy.
+	jsonData.Set(usePerDatasourceExternalIDJSONKey, true)
 }
 
 // preserveGrafanaExternalID keeps a valid existing per-datasource external ID across updates.
@@ -154,4 +156,5 @@ func preserveGrafanaExternalID(uid, stackExternalID string, existing, updated *s
 	}
 
 	updated.Set(grafanaExternalIDJSONKey, buildGrafanaExternalID(stackExternalID, uid))
+	updated.Set(usePerDatasourceExternalIDJSONKey, true)
 }
