@@ -83,6 +83,23 @@ func TestEnsureGrafanaExternalID(t *testing.T) {
 		ensureGrafanaExternalID("dsUid1", "", jd, true)
 		assert.Empty(t, jd.Get(grafanaExternalIDJSONKey).MustString())
 	})
+
+	t.Run("does not mint when key present but empty (explicit stack mode)", func(t *testing.T) {
+		jd := simplejson.NewFromAny(map[string]any{
+			"authType":               grafanaAssumeRoleAuthType,
+			grafanaExternalIDJSONKey: "",
+		})
+		ensureGrafanaExternalID("dsUid1", "stackABC", jd, true)
+		assert.Empty(t, jd.Get(grafanaExternalIDJSONKey).MustString())
+	})
+
+	t.Run("mints when key absent and allowGenerate", func(t *testing.T) {
+		jd := simplejson.NewFromAny(map[string]any{
+			"authType": grafanaAssumeRoleAuthType,
+		})
+		ensureGrafanaExternalID("dsUid1", "stackABC", jd, true)
+		assert.Equal(t, "stackABC-dsUid1", jd.Get(grafanaExternalIDJSONKey).MustString())
+	})
 }
 
 func TestPreserveGrafanaExternalID(t *testing.T) {

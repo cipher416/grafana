@@ -42,8 +42,9 @@ func clearInvalidGrafanaExternalID(uid, stackExternalID string, jsonData *simple
 }
 
 // ensureGrafanaExternalID validates (and clears) any client-supplied grafanaExternalId on create.
-// When allowGenerate is true and auth is grafana_assume_role, it mints {stack}-{uid} if the field
-// is empty after validation. If the client already supplied a valid ID (pre-save UX), it is kept.
+// When allowGenerate is true and auth is grafana_assume_role, it mints {stack}-{uid} only when the
+// JSON key is absent. A present key (even empty) means explicit stack mode and is not reminted.
+// If the client already supplied a valid ID (pre-save UX), it is kept.
 func ensureGrafanaExternalID(uid, stackExternalID string, jsonData *simplejson.Json, allowGenerate bool) {
 	if jsonData == nil {
 		return
@@ -60,7 +61,9 @@ func ensureGrafanaExternalID(uid, stackExternalID string, jsonData *simplejson.J
 	if stackExternalID == "" || uid == "" {
 		return
 	}
-	if jsonData.Get(grafanaExternalIDJSONKey).MustString() != "" {
+
+	// Key present (even if "") = caller chose stack mode; do not remint.
+	if _, exists := jsonData.CheckGet(grafanaExternalIDJSONKey); exists {
 		return
 	}
 
