@@ -96,7 +96,6 @@ func preserveGrafanaExternalID(uid, stackExternalID string, existing, updated *s
 		}
 		// Scrub planted values already in the store so STS falls back to the stack ID.
 		updated.Del(grafanaExternalIDJSONKey)
-		existingID = ""
 	}
 
 	if !allowGenerate {

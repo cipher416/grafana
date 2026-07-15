@@ -18,6 +18,8 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	sdkhttpclient "github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
 	sdkproxy "github.com/grafana/grafana-plugin-sdk-go/backend/proxy"
+	"github.com/open-feature/go-sdk/openfeature"
+
 	"github.com/grafana/grafana/pkg/apimachinery/errutil"
 	"github.com/grafana/grafana/pkg/apimachinery/identity"
 	queryV0 "github.com/grafana/grafana/pkg/apis/datasource/v0alpha1"
@@ -390,7 +392,8 @@ func (s *Service) AddDataSource(ctx context.Context, cmd *datasources.AddDataSou
 	if cmd.JsonData == nil {
 		cmd.JsonData = simplejson.New()
 	}
-	allowPerDsExternalID := s.features.IsEnabled(ctx, featuremgmt.FlagAwsAssumeRolePerDatasourceExternalId)
+	allowPerDsExternalID := openfeature.NewDefaultClient().Boolean(ctx,
+		featuremgmt.FlagAwsAssumeRolePerDatasourceExternalId, false, openfeature.TransactionContext(ctx))
 	if allowPerDsExternalID && cmd.UID == "" {
 		uid, genErr := s.SQLStore.GenerateNewUID(ctx, cmd.OrgID)
 		if genErr != nil {
@@ -683,7 +686,8 @@ func (s *Service) UpdateDataSource(ctx context.Context, cmd *datasources.UpdateD
 		if cmd.JsonData == nil {
 			cmd.JsonData = simplejson.New()
 		}
-		allowPerDsExternalID := s.features.IsEnabled(ctx, featuremgmt.FlagAwsAssumeRolePerDatasourceExternalId)
+		allowPerDsExternalID := openfeature.NewDefaultClient().Boolean(ctx,
+			featuremgmt.FlagAwsAssumeRolePerDatasourceExternalId, false, openfeature.TransactionContext(ctx))
 		preserveGrafanaExternalID(cmd.UID, s.cfg.AWSExternalId, dataSource.JsonData, cmd.JsonData, allowPerDsExternalID)
 
 		// preserve existing lbac rules when updating datasource if we're not updating lbac rules
