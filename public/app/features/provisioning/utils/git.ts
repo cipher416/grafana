@@ -74,6 +74,24 @@ const buildRepoUrl = ({ baseUrl, branch, providerSegments, path }: BuildRepoUrlP
   return parts.join('/');
 };
 
+/** The branch a git-backed repository is configured to sync against, across provider types. */
+export function getConfiguredBranch(spec?: RepositorySpec): string | undefined {
+  switch (spec?.type) {
+    case 'github':
+      return spec.github?.branch;
+    case 'githubEnterprise':
+      return spec.githubEnterprise?.branch;
+    case 'gitlab':
+      return spec.gitlab?.branch;
+    case 'bitbucket':
+      return spec.bitbucket?.branch;
+    case 'git':
+      return spec.git?.branch;
+    default:
+      return undefined;
+  }
+}
+
 export const getRepoHrefForProvider = (spec?: RepositorySpec) => {
   if (!spec || !spec.type) {
     return undefined;

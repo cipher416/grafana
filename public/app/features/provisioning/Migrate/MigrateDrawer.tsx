@@ -2,7 +2,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { type SelectableValue } from '@grafana/data';
 import { t, Trans } from '@grafana/i18n';
-import { Alert, Button, Drawer, Field, Select, Stack, Text } from '@grafana/ui';
+import { Alert, Button, Drawer, Field, Input, Select, Stack, Text } from '@grafana/ui';
 import { type Repository, type ResourceRef } from 'app/api/clients/provisioning/v0alpha1';
 
 import { JobStatus } from '../Job/JobStatus';
@@ -10,6 +10,7 @@ import { GitSyncLimitationsAlert } from '../Shared/GitSyncLimitationsAlert';
 import { ProvisioningAlert } from '../Shared/ProvisioningAlert';
 import { useSyncJob } from '../Wizard/hooks/useSyncJob';
 import { type StepStatusInfo } from '../Wizard/types';
+import { getConfiguredBranch, validateBranchName } from '../utils/git';
 
 interface MigrateDrawerProps {
   repos: Repository[];
@@ -47,20 +48,24 @@ export function MigrateDrawer({ repos, onDismiss, onMigrated, selective, resourc
   // it here in the drawer too, not just in the caller.
   const hasResourcesToMigrate = !isSelective || (resources?.length ?? 0) > 0;
 
-  // Migration writes directly to the repository's configured branch (the
-  // `write` workflow). A repository that only opens pull requests (`branch`
-  // workflow) or is read-only can't run a migration, so it stays in the list
-  // but is disabled — the note below explains how to enable it.
+  // A migration needs somewhere to land. The `write` workflow lets it commit
+  // directly to the configured branch; the `branch` workflow lets it open a
+  // pull request against another branch. A repository with neither (read-only)
+  // can't run a migration, so it stays in the list but is disabled — the note
+  // below explains how to enable it.
   const repoOptions = useMemo<Array<SelectableValue<string>>>(
     () =>
       repos
         .filter((repo) => Boolean(repo.metadata?.name))
-        .map((repo) => ({
-          label: repo.spec?.title || repo.metadata?.name || '',
-          value: repo.metadata?.name ?? '',
-          description: repo.spec?.type,
-          isDisabled: !repo.spec?.workflows.includes('write'),
-        })),
+        .map((repo) => {
+          const workflows = repo.spec?.workflows ?? [];
+          return {
+            label: repo.spec?.title || repo.metadata?.name || '',
+            value: repo.metadata?.name ?? '',
+            description: repo.spec?.type,
+            isDisabled: !workflows.includes('write') && !workflows.includes('branch'),
+          };
+        }),
     [repos]
   );
 
@@ -73,6 +78,10 @@ export function MigrateDrawer({ repos, onDismiss, onMigrated, selective, resourc
     const selectable = repoOptions.filter((option) => !option.isDisabled);
     return selectable.length === 1 ? selectable[0].value : undefined;
   });
+  // Target branch for the migration. Empty means "write directly to the
+  // configured branch". Reset whenever the repository changes so a branch typed
+  // for one repo can't leak into another that doesn't allow it.
+  const [branch, setBranch] = useState('');
 
   const { job, startJob, isLoading } = useSyncJob({ repoName: selectedRepo ?? '' });
   const migratedRef = useRef(false);
@@ -84,15 +93,49 @@ export function MigrateDrawer({ repos, onDismiss, onMigrated, selective, resourc
   const selectedRepoObj = repos.find((repo) => repo.metadata?.name === selectedRepo);
   const syncTarget = selectedRepoObj?.spec?.sync?.target;
 
+  const workflows = selectedRepoObj?.spec?.workflows ?? [];
+  const supportsWrite = workflows.includes('write');
+  const supportsBranch = workflows.includes('branch');
+  const configuredBranch = getConfiguredBranch(selectedRepoObj?.spec);
+  // A branch-only repo can't commit to its configured branch, so a migration
+  // must target a different branch (the pull-request workflow). A write-capable
+  // repo can migrate directly, so a target branch is optional there.
+  const branchRequired = supportsBranch && !supportsWrite;
+  const trimmedBranch = branch.trim();
+
+  const branchError = useMemo(() => {
+    if (!selectedRepo || !supportsBranch) {
+      return undefined;
+    }
+    if (!trimmedBranch) {
+      return branchRequired
+        ? t(
+            'provisioning.migrate.branch-required',
+            'This repository only allows pull requests, so a target branch is required'
+          )
+        : undefined;
+    }
+    if (branchRequired && configuredBranch && trimmedBranch === configuredBranch) {
+      return t('provisioning.migrate.branch-must-differ', 'Enter a branch other than the configured branch');
+    }
+    if (!validateBranchName(trimmedBranch)) {
+      return t('provisioning.migrate.branch-invalid', 'Enter a valid git branch name');
+    }
+    return undefined;
+  }, [selectedRepo, supportsBranch, trimmedBranch, branchRequired, configuredBranch]);
+
+  const canMigrate = Boolean(selectedRepo) && hasResourcesToMigrate && !branchError;
+
   const startMigration = useCallback(async () => {
-    if (!selectedRepo || !hasResourcesToMigrate) {
+    if (!canMigrate) {
       return;
     }
     await startJob(true, {
       syncTarget,
+      ...(trimmedBranch ? { branch: trimmedBranch } : {}),
       ...(isSelective ? { resources } : {}),
     });
-  }, [selectedRepo, hasResourcesToMigrate, startJob, isSelective, resources, syncTarget]);
+  }, [canMigrate, startJob, syncTarget, trimmedBranch, isSelective, resources]);
 
   // Start a fresh job and let it replace the current one once created. We avoid
   // clearing `job` first so the drawer doesn't flash back to the setup form.
@@ -179,11 +222,43 @@ export function MigrateDrawer({ repos, onDismiss, onMigrated, selective, resourc
                 options={repoOptions}
                 value={selectedRepo ?? null}
                 placeholder={t('provisioning.migrate.repo-placeholder', 'Select a repository')}
-                onChange={(option) => setSelectedRepo(option.value)}
+                onChange={(option) => {
+                  setSelectedRepo(option.value);
+                  setBranch('');
+                }}
               />
             )}
           </Stack>
         </Field>
+
+        {supportsBranch && (
+          <Field
+            noMargin
+            required={branchRequired}
+            label={t('provisioning.migrate.branch-label', 'Target branch')}
+            description={
+              branchRequired
+                ? t(
+                    'provisioning.migrate.branch-description-required',
+                    'This repository migrates through a pull request. Enter the branch to open it against.'
+                  )
+                : t(
+                    'provisioning.migrate.branch-description-optional',
+                    'Leave empty to migrate directly into the configured branch, or enter another branch to migrate through a pull request.'
+                  )
+            }
+            invalid={Boolean(branchError)}
+            error={branchError}
+          >
+            <Input
+              id="migrate-target-branch"
+              width={40}
+              value={branch}
+              placeholder={configuredBranch}
+              onChange={(e) => setBranch(e.currentTarget.value)}
+            />
+          </Field>
+        )}
 
         {hasBlockedRepos && (
           <Alert
@@ -191,9 +266,9 @@ export function MigrateDrawer({ repos, onDismiss, onMigrated, selective, resourc
             title={t('provisioning.migrate.repo-no-push-title', 'Some repositories can’t be used for migration')}
           >
             <Trans i18nKey="provisioning.migrate.repo-no-push-body">
-              Migration pushes directly to the repository’s configured branch. Repositories that aren’t set up to allow
-              that are disabled above. To migrate into one, enable pushing to the configured branch in the repository’s
-              settings — you may also need to temporarily allow pushes to that branch in your Git provider.
+              Migration needs to write to the repository, either directly to its configured branch or through a pull
+              request. Read-only repositories are disabled above. To migrate into one, enable the write or branch
+              workflow in the repository’s settings — you may also need to allow pushes in your Git provider.
             </Trans>
           </Alert>
         )}
@@ -206,14 +281,16 @@ export function MigrateDrawer({ repos, onDismiss, onMigrated, selective, resourc
           </Button>
           <Button
             variant="primary"
-            disabled={!selectedRepo || isLoading || !hasResourcesToMigrate}
+            disabled={isLoading || !canMigrate}
             onClick={startMigration}
             tooltip={
               !selectedRepo
                 ? t('provisioning.migrate.migrate-button-disabled-tooltip', 'Select a target repository first')
                 : !hasResourcesToMigrate
                   ? t('provisioning.migrate.migrate-button-empty-tooltip', 'Select at least one resource to migrate')
-                  : undefined
+                  : branchError
+                    ? branchError
+                    : undefined
             }
           >
             {isSelective ? (

@@ -12,8 +12,9 @@ import { MigrateDrawer } from './MigrateDrawer';
 
 setupProvisioningMswServer();
 
-// Migration needs the `write` workflow (push to the configured branch), so
-// repos default to it; pass other workflows to exercise the blocked path.
+// Migration needs a write-capable workflow — `write` (direct commit) or
+// `branch` (pull request). Repos default to `write`; pass `[]` to exercise the
+// read-only/blocked path or `['branch']` for the pull-request path.
 function makeRepo(name: string, title: string, workflows: Array<'branch' | 'write'> = ['write']): Repository {
   return createRepository({ metadata: { name }, spec: { title, workflows } });
 }
@@ -62,11 +63,11 @@ describe('MigrateDrawer', () => {
     expect(onDismiss).toHaveBeenCalled();
   });
 
-  it('disables a repository that cannot push and explains how to enable it', async () => {
-    // A PR-only repository (no `write` workflow) can't run a migration, so it
-    // stays in the picker but disabled, is never pre-selected, and a note
-    // explains how to make it usable.
-    render(
+  it('requires a target branch before a branch-only repository can migrate', async () => {
+    // A branch-only repository migrates through a pull request, so it's usable
+    // (and, as the sole option, pre-selected) but needs a target branch — the
+    // migrate button stays disabled until one is entered.
+    const { user } = render(
       <MigrateDrawer
         selective={false}
         repos={[makeRepo('pr-only', 'PR only repo', ['branch'])]}
@@ -74,15 +75,19 @@ describe('MigrateDrawer', () => {
       />
     );
 
-    expect(await screen.findByText(/enable pushing to the configured branch/i)).toBeInTheDocument();
-    // Nothing usable is pre-selected, so migration stays disabled.
-    expect(screen.getByRole('button', { name: /migrate everything/i })).toHaveAttribute('aria-disabled', 'true');
+    expect(await screen.findByRole('button', { name: /migrate everything/i })).toHaveAttribute('aria-disabled', 'true');
+
+    // The configured branch ("main") is the placeholder; a migration must
+    // target a different one.
+    await user.type(screen.getByPlaceholderText('main'), 'migration-branch');
+
+    expect(await screen.findByRole('button', { name: /migrate everything/i })).toBeEnabled();
   });
 
-  it('pre-selects the only pushable repo and still flags the un-pushable ones', async () => {
-    // With one write-capable repo and one PR-only repo, the usable one is
-    // pre-selected (so migration is enabled) while the note still explains the
-    // disabled option.
+  it('offers both write and branch-workflow repositories as migration targets', async () => {
+    // A write repo (direct commit) and a branch repo (pull request) are both
+    // usable, so neither is flagged as blocked. Two usable repos means none is
+    // pre-selected, so migration stays disabled until the user chooses.
     render(
       <MigrateDrawer
         selective={false}
@@ -91,14 +96,15 @@ describe('MigrateDrawer', () => {
       />
     );
 
-    expect(await screen.findByText('Pushable repo')).toBeInTheDocument();
-    expect(screen.getByText(/enable pushing to the configured branch/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /migrate everything/i })).toBeEnabled();
+    expect(await screen.findByText('Target repository')).toBeInTheDocument();
+    expect(screen.queryByText(/read-only repositories are disabled/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /migrate everything/i })).toHaveAttribute('aria-disabled', 'true');
   });
 
-  it('treats a repository with no spec as un-pushable without crashing', async () => {
-    // `spec` is optional on the API type; a repo missing it should be handled
-    // gracefully (disabled and never pre-selected) alongside a usable one.
+  it('treats a repository with no writable workflow as blocked without crashing', async () => {
+    // `spec` is optional on the API type; a repo missing it (hence no workflows)
+    // is read-only and should be handled gracefully — disabled and never
+    // pre-selected — alongside a usable one.
     render(
       <MigrateDrawer
         selective={false}
@@ -109,7 +115,7 @@ describe('MigrateDrawer', () => {
 
     // The usable repo is pre-selected; the spec-less one counts as blocked.
     expect(await screen.findByText('Usable repo')).toBeInTheDocument();
-    expect(screen.getByText(/enable pushing to the configured branch/i)).toBeInTheDocument();
+    expect(screen.getByText(/read-only repositories are disabled/i)).toBeInTheDocument();
   });
 
   it('enables migration once a repository is picked from the dropdown', async () => {
@@ -172,6 +178,53 @@ describe('MigrateDrawer', () => {
     expect(postedBody).toContain('"generateNewFolderIDs":true');
     // The selection form is replaced by the job view.
     expect(screen.queryByText(/target repository/i)).not.toBeInTheDocument();
+  });
+
+  it('forwards the target branch on the migrate job when one is entered', async () => {
+    let postedBody = '';
+    server.use(
+      http.post(`${BASE}/repositories/:name/jobs`, async ({ request }) => {
+        postedBody = await request.text();
+        return HttpResponse.json(createJob());
+      })
+    );
+    mockJobList(createJob());
+
+    const { user } = render(
+      <MigrateDrawer
+        selective={false}
+        repos={[makeRepo('pr-only', 'PR only repo', ['branch'])]}
+        onDismiss={jest.fn()}
+      />
+    );
+
+    await user.type(screen.getByPlaceholderText('main'), 'migration-branch');
+    await user.click(screen.getByRole('button', { name: /migrate everything/i }));
+
+    expect(await screen.findByText('Pulling...')).toBeInTheDocument();
+    expect(postedBody).toContain('"branch":"migration-branch"');
+  });
+
+  it('omits the branch when migrating directly into the configured branch', async () => {
+    // A write repo with no branch entered writes directly to the configured
+    // branch, so the migrate options must not carry a `branch` field.
+    let postedBody = '';
+    server.use(
+      http.post(`${BASE}/repositories/:name/jobs`, async ({ request }) => {
+        postedBody = await request.text();
+        return HttpResponse.json(createJob());
+      })
+    );
+    mockJobList(createJob());
+
+    const { user } = render(
+      <MigrateDrawer selective={false} repos={[makeRepo('repo-1', 'My only repo')]} onDismiss={jest.fn()} />
+    );
+    await user.click(screen.getByRole('button', { name: /migrate everything/i }));
+
+    expect(await screen.findByText('Pulling...')).toBeInTheDocument();
+    expect(postedBody).toContain('"action":"migrate"');
+    expect(postedBody).not.toContain('"branch"');
   });
 
   it('does not regenerate folder UIDs when migrating into an instance-sync repository', async () => {
