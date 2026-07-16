@@ -237,7 +237,12 @@ func (c *jobsConnector) validateWriteAccess(cfg *provisioning.Repository, spec p
 			targetRef = spec.FixFolderMetadata.Ref
 		}
 	case provisioning.JobActionMigrate:
-		// no ref needed
+		if spec.Migrate != nil {
+			if spec.Migrate.Branch == cfg.Branch() {
+				return fmt.Errorf("target branch for migration must be different than repository's configured branch")
+			}
+			targetRef = spec.Migrate.Branch
+		}
 	default:
 		return nil
 	}
