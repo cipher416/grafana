@@ -63,11 +63,11 @@ describe('MigrateDrawer', () => {
     expect(onDismiss).toHaveBeenCalled();
   });
 
-  it('requires a target branch before a branch-only repository can migrate', async () => {
-    // A branch-only repository migrates through a pull request, so it's usable
-    // (and, as the sole option, pre-selected) but needs a target branch — the
-    // migrate button stays disabled until one is entered.
-    const { user } = render(
+  it('auto-generates the target branch for a branch-only repository', async () => {
+    // A branch-only repository migrates through a pull request, so pushing to a
+    // branch is mandatory: the checkbox is checked and disabled, and the
+    // read-only branch is generated for the user (prefixed `migrate-<repo>`).
+    render(
       <MigrateDrawer
         selective={false}
         repos={[makeRepo('pr-only', 'PR only repo', ['branch'])]}
@@ -75,13 +75,52 @@ describe('MigrateDrawer', () => {
       />
     );
 
-    expect(await screen.findByRole('button', { name: /migrate everything/i })).toHaveAttribute('aria-disabled', 'true');
-
-    // The configured branch ("main") is the placeholder; a migration must
-    // target a different one.
-    await user.type(screen.getByPlaceholderText('main'), 'migration-branch');
-
     expect(await screen.findByRole('button', { name: /migrate everything/i })).toBeEnabled();
+
+    const checkbox = screen.getByRole('checkbox', { name: /push changes to a branch/i });
+    expect(checkbox).toBeChecked();
+    expect(checkbox).toBeDisabled();
+
+    // The only textbox in the drawer is the read-only generated branch.
+    const branchInput = screen.getByRole('textbox');
+    expect(branchInput).toHaveAttribute('readonly');
+    expect((branchInput as HTMLInputElement).value).toMatch(/^migrate-pr-only\//);
+  });
+
+  it('lets a write-capable repo opt into pushing to a branch via the checkbox', async () => {
+    let postedBody = '';
+    server.use(
+      http.post(`${BASE}/repositories/:name/jobs`, async ({ request }) => {
+        postedBody = await request.text();
+        return HttpResponse.json(createJob());
+      })
+    );
+    mockJobList(createJob());
+
+    const { user } = render(
+      <MigrateDrawer
+        selective={false}
+        repos={[makeRepo('repo-1', 'My repo', ['write', 'branch'])]}
+        onDismiss={jest.fn()}
+      />
+    );
+
+    // Unchecked by default → direct write, so no branch field is shown.
+    const checkbox = await screen.findByRole('checkbox', { name: /push changes to a branch/i });
+    expect(checkbox).not.toBeChecked();
+    expect(checkbox).toBeEnabled();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+
+    // Checking it auto-populates the read-only branch field.
+    await user.click(checkbox);
+    const branchInput = screen.getByRole('textbox');
+    expect(branchInput).toHaveAttribute('readonly');
+    expect((branchInput as HTMLInputElement).value).toMatch(/^migrate-repo-1\//);
+
+    await user.click(screen.getByRole('button', { name: /migrate everything/i }));
+
+    expect(await screen.findByText('Pulling...')).toBeInTheDocument();
+    expect(postedBody).toMatch(/"branch":"migrate-repo-1\//);
   });
 
   it('offers both write and branch-workflow repositories as migration targets', async () => {
@@ -180,7 +219,7 @@ describe('MigrateDrawer', () => {
     expect(screen.queryByText(/target repository/i)).not.toBeInTheDocument();
   });
 
-  it('forwards the target branch on the migrate job when one is entered', async () => {
+  it('forwards the auto-generated target branch on the migrate job for a branch-only repo', async () => {
     let postedBody = '';
     server.use(
       http.post(`${BASE}/repositories/:name/jobs`, async ({ request }) => {
@@ -198,11 +237,11 @@ describe('MigrateDrawer', () => {
       />
     );
 
-    await user.type(screen.getByPlaceholderText('main'), 'migration-branch');
     await user.click(screen.getByRole('button', { name: /migrate everything/i }));
 
     expect(await screen.findByText('Pulling...')).toBeInTheDocument();
-    expect(postedBody).toContain('"branch":"migration-branch"');
+    // The generated branch is forwarded, prefixed with `migrate-<repo>`.
+    expect(postedBody).toMatch(/"branch":"migrate-pr-only\//);
   });
 
   it('omits the branch when migrating directly into the configured branch', async () => {
@@ -277,6 +316,45 @@ describe('MigrateDrawer', () => {
     });
 
     await waitFor(() => expect(onMigrated).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows an "Open pull request" link when a branch migration completes', async () => {
+    // A branch migration finishes with the backend-populated pull-request URL on
+    // the job status; the drawer surfaces it so the user can open the PR.
+    mockCreateJob(createJob());
+    mockJobList(createJob());
+    mockRepositoryLookup();
+
+    const { user } = render(
+      <MigrateDrawer
+        selective={false}
+        repos={[makeRepo('pr-only', 'PR only repo', ['branch'])]}
+        onDismiss={jest.fn()}
+      />
+    );
+    await user.click(await screen.findByRole('button', { name: /migrate everything/i }));
+
+    expect(await screen.findByText('Pulling...')).toBeInTheDocument();
+
+    act(() => {
+      getMockLiveSrv().emitWatchEvent('jobs', {
+        type: 'MODIFIED',
+        object: createJob({
+          status: {
+            state: 'success',
+            url: { newPullRequestURL: 'https://github.com/org/repo/compare/main...migrate-pr-only' },
+          },
+        }),
+      });
+    });
+
+    expect(await screen.findByRole('link', { name: /open pull request/i })).toHaveAttribute(
+      'href',
+      'https://github.com/org/repo/compare/main...migrate-pr-only'
+    );
+    // Migrate shows only the pull-request link, not the branch/compare links.
+    expect(screen.queryByRole('link', { name: /view branch/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /compare branch/i })).not.toBeInTheDocument();
   });
 
   it('surfaces the error message when the migration job fails', async () => {

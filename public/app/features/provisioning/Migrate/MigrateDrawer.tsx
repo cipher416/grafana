@@ -2,7 +2,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { type SelectableValue } from '@grafana/data';
 import { t, Trans } from '@grafana/i18n';
-import { Alert, Button, Drawer, Field, Input, Select, Stack, Text } from '@grafana/ui';
+import { Alert, Button, Checkbox, Drawer, Field, Input, Select, Stack, Text } from '@grafana/ui';
 import { type Repository, type ResourceRef } from 'app/api/clients/provisioning/v0alpha1';
 
 import { JobStatus } from '../Job/JobStatus';
@@ -10,7 +10,8 @@ import { GitSyncLimitationsAlert } from '../Shared/GitSyncLimitationsAlert';
 import { ProvisioningAlert } from '../Shared/ProvisioningAlert';
 import { useSyncJob } from '../Wizard/hooks/useSyncJob';
 import { type StepStatusInfo } from '../Wizard/types';
-import { getConfiguredBranch, validateBranchName } from '../utils/git';
+import { generateNewBranchName } from '../components/utils/newBranchName';
+import { getConfiguredBranch } from '../utils/git';
 
 interface MigrateDrawerProps {
   repos: Repository[];
@@ -78,11 +79,6 @@ export function MigrateDrawer({ repos, onDismiss, onMigrated, selective, resourc
     const selectable = repoOptions.filter((option) => !option.isDisabled);
     return selectable.length === 1 ? selectable[0].value : undefined;
   });
-  // Target branch for the migration. Empty means "write directly to the
-  // configured branch". Reset whenever the repository changes so a branch typed
-  // for one repo can't leak into another that doesn't allow it.
-  const [branch, setBranch] = useState('');
-
   const { job, startJob, isLoading } = useSyncJob({ repoName: selectedRepo ?? '' });
   const migratedRef = useRef(false);
   // Track the job's reported status so the drawer can surface errors/warnings.
@@ -92,39 +88,30 @@ export function MigrateDrawer({ repos, onDismiss, onMigrated, selective, resourc
 
   const selectedRepoObj = repos.find((repo) => repo.metadata?.name === selectedRepo);
   const syncTarget = selectedRepoObj?.spec?.sync?.target;
+  const configuredBranch = getConfiguredBranch(selectedRepoObj?.spec);
 
   const workflows = selectedRepoObj?.spec?.workflows ?? [];
   const supportsWrite = workflows.includes('write');
   const supportsBranch = workflows.includes('branch');
-  const configuredBranch = getConfiguredBranch(selectedRepoObj?.spec);
-  // A branch-only repo can't commit to its configured branch, so a migration
-  // must target a different branch (the pull-request workflow). A write-capable
-  // repo can migrate directly, so a target branch is optional there.
+  // A branch-only repo can't commit to its configured branch, so pushing to a
+  // branch (opening a pull request) is mandatory there; a write-capable repo
+  // chooses via the checkbox.
   const branchRequired = supportsBranch && !supportsWrite;
-  const trimmedBranch = branch.trim();
 
-  const branchError = useMemo(() => {
-    if (!selectedRepo || !supportsBranch) {
-      return undefined;
-    }
-    if (!trimmedBranch) {
-      return branchRequired
-        ? t(
-            'provisioning.migrate.branch-required',
-            'This repository only allows pull requests, so a target branch is required'
-          )
-        : undefined;
-    }
-    if (branchRequired && configuredBranch && trimmedBranch === configuredBranch) {
-      return t('provisioning.migrate.branch-must-differ', 'Enter a branch other than the configured branch');
-    }
-    if (!validateBranchName(trimmedBranch)) {
-      return t('provisioning.migrate.branch-invalid', 'Enter a valid git branch name');
-    }
-    return undefined;
-  }, [selectedRepo, supportsBranch, trimmedBranch, branchRequired, configuredBranch]);
+  // Unchecked by default and reset when the repository changes, so a choice made
+  // for one repo doesn't carry into another.
+  const [pushToBranch, setPushToBranch] = useState(false);
+  const pushChangesToBranch = supportsBranch && (branchRequired || pushToBranch);
 
-  const canMigrate = Boolean(selectedRepo) && hasResourcesToMigrate && !branchError;
+  // Auto-populate the target branch when pushing to a branch. Keyed on the repo
+  // and the toggle so the timestamped name is stable across renders and matches
+  // what we display and submit.
+  const branchRef = useMemo(
+    () => (selectedRepo && pushChangesToBranch ? generateNewBranchName(`migrate-${selectedRepo}`) : ''),
+    [selectedRepo, pushChangesToBranch]
+  );
+
+  const canMigrate = Boolean(selectedRepo) && hasResourcesToMigrate;
 
   const startMigration = useCallback(async () => {
     if (!canMigrate) {
@@ -132,10 +119,10 @@ export function MigrateDrawer({ repos, onDismiss, onMigrated, selective, resourc
     }
     await startJob(true, {
       syncTarget,
-      ...(trimmedBranch ? { branch: trimmedBranch } : {}),
+      ...(branchRef ? { branch: branchRef } : {}),
       ...(isSelective ? { resources } : {}),
     });
-  }, [canMigrate, startJob, syncTarget, trimmedBranch, isSelective, resources]);
+  }, [canMigrate, startJob, syncTarget, branchRef, isSelective, resources]);
 
   // Start a fresh job and let it replace the current one once created. We avoid
   // clearing `job` first so the drawer doesn't flash back to the setup form.
@@ -224,7 +211,7 @@ export function MigrateDrawer({ repos, onDismiss, onMigrated, selective, resourc
                 placeholder={t('provisioning.migrate.repo-placeholder', 'Select a repository')}
                 onChange={(option) => {
                   setSelectedRepo(option.value);
-                  setBranch('');
+                  setPushToBranch(false);
                 }}
               />
             )}
@@ -232,31 +219,37 @@ export function MigrateDrawer({ repos, onDismiss, onMigrated, selective, resourc
         </Field>
 
         {supportsBranch && (
+          <Field noMargin>
+            <Checkbox
+              label={t('provisioning.migrate.push-to-branch-label', 'Push changes to a branch')}
+              description={
+                branchRequired
+                  ? t(
+                      'provisioning.migrate.push-to-branch-required',
+                      'This repository only allows pull requests, so changes are always pushed to a branch.'
+                    )
+                  : t(
+                      'provisioning.migrate.push-to-branch-description',
+                      'Open a pull request instead of committing directly to the configured branch.'
+                    )
+              }
+              value={pushChangesToBranch}
+              disabled={branchRequired}
+              onChange={(e) => setPushToBranch(e.currentTarget.checked)}
+            />
+          </Field>
+        )}
+
+        {branchRef && (
           <Field
             noMargin
-            required={branchRequired}
             label={t('provisioning.migrate.branch-label', 'Target branch')}
-            description={
-              branchRequired
-                ? t(
-                    'provisioning.migrate.branch-description-required',
-                    'This repository migrates through a pull request. Enter the branch to open it against.'
-                  )
-                : t(
-                    'provisioning.migrate.branch-description-optional',
-                    'Leave empty to migrate directly into the configured branch, or enter another branch to migrate through a pull request.'
-                  )
-            }
-            invalid={Boolean(branchError)}
-            error={branchError}
+            description={t(
+              'provisioning.migrate.branch-description-generated',
+              'Grafana creates this branch and opens the pull request for you.'
+            )}
           >
-            <Input
-              id="migrate-target-branch"
-              width={40}
-              value={branch}
-              placeholder={configuredBranch}
-              onChange={(e) => setBranch(e.currentTarget.value)}
-            />
+            <Input id="migrate-target-branch" width={40} value={branchRef} readOnly />
           </Field>
         )}
 
@@ -288,9 +281,7 @@ export function MigrateDrawer({ repos, onDismiss, onMigrated, selective, resourc
                 ? t('provisioning.migrate.migrate-button-disabled-tooltip', 'Select a target repository first')
                 : !hasResourcesToMigrate
                   ? t('provisioning.migrate.migrate-button-empty-tooltip', 'Select at least one resource to migrate')
-                  : branchError
-                    ? branchError
-                    : undefined
+                  : undefined
             }
           >
             {isSelective ? (
