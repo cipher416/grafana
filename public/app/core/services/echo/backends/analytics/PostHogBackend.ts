@@ -46,13 +46,19 @@ export class PostHogBackend implements EchoBackend<PageviewEchoEvent, PostHogBac
     const apiHost = options.postHogHost || DEFAULT_POSTHOG_HOST;
 
     if (!(window.posthog && window.posthog.__loaded)) {
-      // loadScript is not awaited (constructors can't be async), so init/identify/capture
-      // are called before the SDK has loaded. These stubs queue calls for the real SDK to replay.
+      // loadScript is not awaited (constructors can't be async), so PostHog's snippet
+      // format queues initialization in `_i` and other calls on the temporary array.
       // eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
       const tempPosthog: any[] = ((window as Record<string, any>).posthog = []);
-      for (const method of ['init', 'identify', 'capture']) {
-        // eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
-        (tempPosthog as Record<string, any>)[method] = function (...args: unknown[]) {
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
+      const posthogStub = tempPosthog as Record<string, any>;
+      posthogStub._i = [];
+      posthogStub.init = (token: string, config: { api_host: string }) => {
+        posthogStub._i.push([token, config, 'posthog']);
+      };
+
+      for (const method of ['identify', 'capture']) {
+        posthogStub[method] = function (...args: unknown[]) {
           tempPosthog.push([method, ...args]);
         };
       }
